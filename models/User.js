@@ -113,6 +113,10 @@ const userSchema = new mongoose.Schema(
     type: mongoose.Schema.Types.ObjectId,
     ref: "User"
   },
+   pushTokens: [{
+    type: String,
+    sparse: true
+  }],
 
   loanStats: {
     totalLoans: { type: Number, default: 0 },

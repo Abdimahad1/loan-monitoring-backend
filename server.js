@@ -13,6 +13,8 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const guarantorRoutes = require("./routes/guarantorRoutes");
 
+// ========== IMPORT NOTIFICATION JOBS ==========
+const notificationJobs = require('./jobs/notificationJobs');
 
 const app = express();
 
@@ -51,7 +53,6 @@ app.use('/uploads', express.static('uploads'));
 app.use('/api/upload', uploadRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use("/api/guarantor", guarantorRoutes);
-
 
 // Test route
 app.get("/test", (req, res) => {
@@ -95,6 +96,11 @@ const connectDB = async () => {
       console.log(`✅ Server running on port ${PORT}`);
       console.log(`🌐 CORS: All origins allowed`);
       console.log(`🔗 Test: http://localhost:${PORT}/test`);
+      
+      // ========== START NOTIFICATION JOBS ==========
+      console.log('⏰ Starting notification scheduler...');
+      // The cron job will start automatically when the file is imported
+      console.log('✅ Notification scheduler started (runs daily at 8 AM)');
     });
     
   } catch (error) {

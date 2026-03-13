@@ -157,6 +157,182 @@ async function sendWelcomeEmail({
 }
 
 /**
+ * Send notification email for loan events
+ */
+async function sendNotificationEmail({
+  email,
+  name,
+  type,
+  title,
+  message,
+  actionLabel,
+  actionUrl,
+  amount,
+  loanId
+}) {
+  if (!transporter) {
+    console.error('❌ SMTP transporter not initialized');
+    throw new Error('Email service not configured properly');
+  }
+
+  try {
+    console.log(`📧 Sending notification email to: ${email} (Type: ${type})`);
+    
+    // Get icon and color based on notification type
+    const { icon, color, bgColor } = getNotificationStyle(type);
+    
+    const mailOptions = {
+      from: process.env.DEFAULT_FROM_EMAIL || 'jeykhan897@gmail.com',
+      to: email,
+      subject: `${icon} ${title} - Loan Monitoring App`,
+      html: `
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+          <!-- Header with gradient -->
+          <div style="background: linear-gradient(135deg, ${color.from}, ${color.to}); padding: 2rem; color: white; border-radius: 12px 12px 0 0;">
+            <h1 style="margin: 0; font-size: 1.8rem; font-weight: 600;">${icon} ${title}</h1>
+            <p style="margin: 0.5rem 0 0; opacity: 0.95; font-size: 1.1rem;">${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+          </div>
+          
+          <!-- Main content -->
+          <div style="padding: 2rem; background: white; border-radius: 0 0 12px 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08);">
+            <!-- Hello message -->
+            <div style="margin-bottom: 1.5rem;">
+              <h2 style="margin: 0; font-size: 1.4rem; color: #2d3748;">Hello ${name}!</h2>
+            </div>
+            
+            <!-- Notification Card -->
+            <div style="background: ${bgColor}; border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem; border-left: 4px solid ${color.to};">
+              <p style="margin: 0; color: #2d3748; font-size: 1.1rem; line-height: 1.6;">${message}</p>
+            </div>
+            
+            <!-- Details Card -->
+            ${amount || loanId ? `
+            <div style="background: #f8f9fa; border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem; border: 1px solid #e2e8f0;">
+              <h3 style="margin-top: 0; margin-bottom: 1rem; color: #2d3748; font-size: 1.2rem;">📋 Details</h3>
+              <div style="display: grid; gap: 0.75rem;">
+                ${loanId ? `
+                <div style="display: flex; align-items: center; padding: 0.5rem; background: white; border-radius: 8px;">
+                  <span style="width: 80px; font-size: 0.9rem; color: #718096;">Loan ID</span>
+                  <span style="flex: 1; font-weight: 600; color: #2d3748;">${loanId}</span>
+                </div>
+                ` : ''}
+                ${amount ? `
+                <div style="display: flex; align-items: center; padding: 0.5rem; background: white; border-radius: 8px;">
+                  <span style="width: 80px; font-size: 0.9rem; color: #718096;">Amount</span>
+                  <span style="flex: 1; font-weight: 600; color: ${color.to};">${amount}</span>
+                </div>
+                ` : ''}
+              </div>
+            </div>
+            ` : ''}
+            
+            <!-- Action Button -->
+            ${actionLabel && actionUrl ? `
+            <div style="text-align: center; margin: 2rem 0;">
+              <a href="${actionUrl}" 
+                 style="display: inline-block; background: linear-gradient(135deg, ${color.from}, ${color.to}); color: white; padding: 1rem 2.5rem; text-decoration: none; border-radius: 50px; font-weight: 600; font-size: 1.1rem; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
+                ${actionLabel} →
+              </a>
+            </div>
+            ` : ''}
+            
+            <!-- Support Footer -->
+            <div style="border-top: 1px solid #e2e8f0; padding-top: 1.5rem; text-align: center;">
+              <p style="margin: 0 0 0.5rem; color: #718096; font-size: 0.9rem;">
+                Need help? Contact our support team.
+              </p>
+              <p style="margin: 0; color: #718096; font-size: 0.9rem;">
+                <strong>Support Email:</strong> 
+                <a href="mailto:${process.env.SUPPORT_EMAIL || 'jeykhan897@gmail.com'}" style="color: #667eea; text-decoration: none;">
+                  ${process.env.SUPPORT_EMAIL || 'jeykhan897@gmail.com'}
+                </a>
+              </p>
+            </div>
+          </div>
+          
+          <!-- Footer -->
+          <div style="text-align: center; margin-top: 1.5rem; font-size: 0.8rem; color: #a0aec0;">
+            <p>© ${new Date().getFullYear()} Loan Monitoring App. All rights reserved.</p>
+            <p style="margin-top: 0.25rem;">This is an automated notification, please do not reply to this email.</p>
+          </div>
+        </div>
+      `
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ Notification email sent successfully:', info.messageId);
+    return info;
+  } catch (err) {
+    console.error('❌ Error sending notification email:', err);
+    throw err;
+  }
+}
+
+/**
+ * Helper function to get notification styles
+ */
+function getNotificationStyle(type) {
+  const styles = {
+    loan_created: {
+      icon: '📝',
+      color: { from: '#3b82f6', to: '#2563eb' }, // Blue
+      bgColor: '#eff6ff'
+    },
+    loan_approved: {
+      icon: '✅',
+      color: { from: '#10b981', to: '#059669' }, // Green
+      bgColor: '#f0fdf4'
+    },
+    loan_rejected: {
+      icon: '❌',
+      color: { from: '#ef4444', to: '#dc2626' }, // Red
+      bgColor: '#fef2f2'
+    },
+    loan_disbursed: {
+      icon: '💰',
+      color: { from: '#8b5cf6', to: '#7c3aed' }, // Purple
+      bgColor: '#f5f3ff'
+    },
+    loan_completed: {
+      icon: '🎉',
+      color: { from: '#14b8a6', to: '#0d9488' }, // Teal
+      bgColor: '#f0fdfa'
+    },
+    payment_received: {
+      icon: '💵',
+      color: { from: '#10b981', to: '#059669' }, // Green
+      bgColor: '#f0fdf4'
+    },
+    payment_overdue: {
+      icon: '⚠️',
+      color: { from: '#f97316', to: '#ea580c' }, // Orange
+      bgColor: '#fff7ed'
+    },
+    payment_reminder: {
+      icon: '⏰',
+      color: { from: '#f59e0b', to: '#d97706' }, // Amber
+      bgColor: '#fffbeb'
+    },
+    guarantor_added: {
+      icon: '👤',
+      color: { from: '#6366f1', to: '#4f46e5' }, // Indigo
+      bgColor: '#eef2ff'
+    },
+    risk_alert: {
+      icon: '📊',
+      color: { from: '#ec4899', to: '#db2777' }, // Pink
+      bgColor: '#fdf2f8'
+    }
+  };
+
+  return styles[type] || {
+    icon: '🔔',
+    color: { from: '#6b7280', to: '#4b5563' }, // Gray
+    bgColor: '#f9fafb'
+  };
+}
+
+/**
  * Send password reset OTP email
  */
 async function sendPasswordResetEmail({ email, name, otp }) {
@@ -259,7 +435,7 @@ async function sendPasswordResetConfirmation({ email, name }) {
             <p>If you didn't make this change, please contact our support team immediately.</p>
             
             <div style="text-align: center; margin: 2rem 0;">
-              <a href="${process.env.FRONTEND_URL}/login" 
+              <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/login" 
                  style="display: inline-block; background: #059669; color: white; padding: 1rem 2rem; text-decoration: none; border-radius: 8px; font-weight: bold;">
                 Login to Your Account
               </a>
@@ -286,7 +462,8 @@ async function sendPasswordResetConfirmation({ email, name }) {
 
 module.exports = {
   sendWelcomeEmail,
+  sendNotificationEmail, // NEW: For loan notifications
   sendPasswordResetEmail,
   sendPasswordResetConfirmation,
-  transporter // Also export the transporter itself if needed elsewhere
+  transporter
 };

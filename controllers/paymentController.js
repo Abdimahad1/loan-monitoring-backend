@@ -4,6 +4,9 @@ const Loan = require('../models/Loan');
 const User = require('../models/User');
 const { processWaafiPayPayment, isPaymentSuccessful, formatPhone } = require('../services/waafiPayService');
 
+// Import notification function
+const { notifyPaymentReceived } = require("./notificationController");
+
 /**
  * Process a loan payment with proper installment tracking
  */
@@ -307,6 +310,24 @@ exports.processLoanPayment = async (req, res) => {
         }
       } else {
         userMessage = '❌ Payment Failed\n\nUnable to process your payment. Please try again later.';
+      }
+    }
+
+    // ========== SEND NOTIFICATIONS FOR SUCCESSFUL PAYMENT ==========
+    if (paymentSuccessful) {
+      try {
+        console.log('📨 Triggering payment received notifications...');
+        
+        // Get fresh loan data with populated fields for notifications
+        const populatedLoan = await Loan.findById(loanId)
+          .populate('borrower.id', 'name email')
+          .populate('guarantor.id', 'name email');
+        
+        await notifyPaymentReceived(payment, populatedLoan);
+        console.log('✅ Payment received notifications sent');
+      } catch (notifError) {
+        console.error('❌ Failed to send payment notifications:', notifError);
+        // Don't fail the request if notifications fail
       }
     }
 

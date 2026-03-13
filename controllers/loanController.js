@@ -4,6 +4,12 @@ const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const { sendWelcomeEmail } = require('../services/emailService');
 
+// Import notification functions
+const { 
+  notifyLoanCreated,
+  notifyLoanApproved 
+} = require("./notificationController");
+
 // Helper function to generate loan ID
 const generateLoanId = async () => {
   const year = new Date().getFullYear();
@@ -493,7 +499,27 @@ exports.createLoan = async (req, res) => {
     session.endSession();
     console.log('✅ Transaction committed');
 
-    // ========== STEP 7: NOW SEND EMAILS AFTER SUCCESSFUL COMMIT ==========
+    // ========== STEP 7: SEND NOTIFICATIONS ==========
+    const notificationResults = [];
+
+    // Send loan creation notifications
+    try {
+      console.log('📨 Triggering loan creation notifications...');
+      
+      // Get fresh loan data with populated fields for notifications
+      const populatedLoan = await Loan.findById(loan._id)
+        .populate('borrower.id', 'name email')
+        .populate('guarantor.id', 'name email');
+      
+      await notifyLoanCreated(populatedLoan);
+      console.log('✅ Loan creation notifications sent');
+      notificationResults.push({ type: 'loan_created', success: true });
+    } catch (notifError) {
+      console.error('❌ Failed to send loan creation notifications:', notifError);
+      notificationResults.push({ type: 'loan_created', success: false, error: notifError.message });
+    }
+
+    // Send welcome emails for new users (existing code)
     const emailPromises = [];
     const emailResults = [];
 
@@ -566,7 +592,8 @@ exports.createLoan = async (req, res) => {
     const responseData = {
       loan,
       risk: loan.risk,
-      emailStatus: emailResults
+      emailStatus: emailResults,
+      notificationStatus: notificationResults
     };
 
     if (newBorrowerData) {
@@ -891,13 +918,27 @@ exports.approveLoan = async (req, res) => {
     loan.status = 'active';
     loan.approvedBy = req.user.id;
     loan.approvedAt = Date.now();
-    // Optionally track when it became active
     loan.activeAt = Date.now();
     
     await loan.save();
     
-    // Log the action
     console.log(`✅ Loan ${loan.loanId} approved and activated by ${req.user.email}`);
+
+    // ========== SEND APPROVAL NOTIFICATIONS ==========
+    try {
+      console.log('📨 Triggering loan approval notifications...');
+      
+      // Get fresh loan data with populated fields for notifications
+      const populatedLoan = await Loan.findById(loan._id)
+        .populate('borrower.id', 'name email')
+        .populate('guarantor.id', 'name email');
+      
+      await notifyLoanApproved(populatedLoan);
+      console.log('✅ Loan approval notifications sent');
+    } catch (notifError) {
+      console.error('❌ Failed to send loan approval notifications:', notifError);
+      // Don't fail the request if notifications fail
+    }
     
     res.status(200).json({
       success: true,
@@ -1017,11 +1058,35 @@ exports.rejectLoan = async (req, res) => {
       });
     }
 
+    // Store original status for notification
+    const originalStatus = loan.status;
+    
     loan.status = 'rejected';
     loan.rejectionReason = reason;
     loan.updatedBy = req.user.id;
 
     await loan.save();
+
+    console.log(`✅ Loan ${loan.loanId} rejected by ${req.user.email}`);
+
+    // ========== SEND REJECTION NOTIFICATIONS ==========
+    try {
+      console.log('📨 Triggering loan rejection notifications...');
+      
+      // Import notification function (add at top of file with other imports)
+      const { notifyLoanRejected } = require("./notificationController");
+      
+      // Get fresh loan data with populated fields for notifications
+      const populatedLoan = await Loan.findById(loan._id)
+        .populate('borrower.id', 'name email')
+        .populate('guarantor.id', 'name email');
+      
+      await notifyLoanRejected(populatedLoan);
+      console.log('✅ Loan rejection notifications sent');
+    } catch (notifError) {
+      console.error('❌ Failed to send loan rejection notifications:', notifError);
+      // Don't fail the request if notifications fail
+    }
 
     res.status(200).json({
       success: true,

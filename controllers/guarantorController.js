@@ -2,6 +2,7 @@
 const mongoose = require("mongoose");
 const Loan = require("../models/Loan");
 const User = require("../models/User");
+const LoanPayment = require("../models/LoanPayment"); // ADDED: Import LoanPayment model
 
 /**
  * @desc    Get dashboard stats for guarantor
@@ -18,6 +19,16 @@ exports.getGuarantorStats = async (req, res) => {
       isDeleted: false
     });
 
+    // Get all payments for these loans to calculate actual paid amounts
+    const loanIds = loans.map(loan => loan._id);
+    const payments = await LoanPayment.find({
+      loanId: { $in: loanIds },
+      status: 'success'
+    });
+
+    // Calculate actual paid amount from payments
+    const actualPaidAmount = payments.reduce((sum, p) => sum + p.amount, 0);
+
     // Calculate stats
     const stats = {
       totalGuaranteed: loans.length,
@@ -28,7 +39,7 @@ exports.getGuarantorStats = async (req, res) => {
       atRiskAmount: loans
         .filter(l => l.status === 'overdue')
         .reduce((sum, loan) => sum + loan.remainingAmount, 0),
-      paidAmount: loans.reduce((sum, loan) => sum + loan.paidAmount, 0),
+      paidAmount: actualPaidAmount, // Use actual paid amount from payments
     };
 
     res.status(200).json({
@@ -90,37 +101,61 @@ exports.getGuarantorLoans = async (req, res) => {
 
     const total = await Loan.countDocuments(query);
 
-    // Process loans for guarantor view (remove sensitive data if needed)
-    const processedLoans = loans.map(loan => ({
-      _id: loan._id,
-      loanId: loan.loanId,
-      amount: loan.amount,
-      paidAmount: loan.paidAmount,
-      remainingAmount: loan.remainingAmount,
-      status: loan.status,
-      progress: loan.amount > 0 ? loan.paidAmount / loan.amount : 0,
-      startDate: loan.startDate,
-      endDate: loan.endDate,
-      term: loan.term,
-      interestRate: loan.interestRate,
-      purpose: loan.purpose,
-      description: loan.description,
-      risk: loan.risk,
-      schedule: loan.schedule, // For installment tracking
-      payments: loan.payments,  // For payment history
-      borrower: {
-        id: loan.borrower.id,
-        name: loan.borrower.name,
-        email: loan.borrower.email,
-        phone: loan.borrower.phone,
-        initials: loan.borrower.name
-          ? loan.borrower.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2)
-          : 'UN',
-      },
-      nextPayment: loan.schedule?.find(s => s.status === 'pending'),
-      nextPaymentDate: loan.schedule?.find(s => s.status === 'pending')?.dueDate,
-      nextPaymentAmount: loan.schedule?.find(s => s.status === 'pending')?.amount,
-    }));
+    // Get all payments for these loans
+    const loanIds = loans.map(loan => loan._id);
+    const allPayments = await LoanPayment.find({
+      loanId: { $in: loanIds },
+      status: 'success'
+    });
+
+    // Create a map of loanId -> total paid amount
+    const paidAmountMap = {};
+    allPayments.forEach(payment => {
+      const loanIdStr = payment.loanId.toString();
+      paidAmountMap[loanIdStr] = (paidAmountMap[loanIdStr] || 0) + payment.amount;
+    });
+
+    // Process loans for guarantor view with actual paid amounts
+    const processedLoans = loans.map(loan => {
+      const actualPaidAmount = paidAmountMap[loan._id.toString()] || 0;
+      const remainingAmount = loan.amount - actualPaidAmount;
+      
+      // Count paid installments from schedule
+      const paidInstallments = loan.schedule?.filter(s => s.status === 'paid').length || 0;
+      const totalInstallments = loan.schedule?.length || 0;
+
+      return {
+        _id: loan._id,
+        loanId: loan.loanId,
+        amount: loan.amount,
+        paidAmount: actualPaidAmount, // Use actual paid amount
+        remainingAmount: remainingAmount,
+        status: loan.status,
+        progress: loan.amount > 0 ? actualPaidAmount / loan.amount : 0,
+        startDate: loan.startDate,
+        endDate: loan.endDate,
+        term: loan.term,
+        interestRate: loan.interestRate,
+        purpose: loan.purpose,
+        description: loan.description,
+        risk: loan.risk,
+        schedule: loan.schedule,
+        paidInstallments: paidInstallments,
+        totalInstallments: totalInstallments,
+        borrower: {
+          id: loan.borrower.id,
+          name: loan.borrower.name,
+          email: loan.borrower.email,
+          phone: loan.borrower.phone,
+          initials: loan.borrower.name
+            ? loan.borrower.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2)
+            : 'UN',
+        },
+        nextPayment: loan.schedule?.find(s => s.status === 'pending'),
+        nextPaymentDate: loan.schedule?.find(s => s.status === 'pending')?.dueDate,
+        nextPaymentAmount: loan.schedule?.find(s => s.status === 'pending')?.amount,
+      };
+    });
 
     res.status(200).json({
       success: true,
@@ -158,8 +193,7 @@ exports.getGuarantorLoanById = async (req, res) => {
       isDeleted: false
     })
     .populate('borrower.id', 'name email phone profile')
-    .populate('createdBy', 'name email')
-    .populate('payments.recordedBy', 'name email');
+    .populate('createdBy', 'name email');
 
     if (!loan) {
       return res.status(404).json({
@@ -168,15 +202,28 @@ exports.getGuarantorLoanById = async (req, res) => {
       });
     }
 
+    // Get actual payments from LoanPayment collection
+    const payments = await LoanPayment.find({ 
+      loanId: loan._id,
+      status: 'success'
+    }).sort({ createdAt: -1 });
+
+    const actualPaidAmount = payments.reduce((sum, p) => sum + p.amount, 0);
+    const remainingAmount = loan.amount - actualPaidAmount;
+
+    // Count paid installments from schedule
+    const paidInstallments = loan.schedule?.filter(s => s.status === 'paid').length || 0;
+    const totalInstallments = loan.schedule?.length || 0;
+
     // Process loan for guarantor view
     const processedLoan = {
       _id: loan._id,
       loanId: loan.loanId,
       amount: loan.amount,
-      paidAmount: loan.paidAmount,
-      remainingAmount: loan.remainingAmount,
+      paidAmount: actualPaidAmount, // Use actual paid amount from payments
+      remainingAmount: remainingAmount,
       status: loan.status,
-      progress: loan.amount > 0 ? loan.paidAmount / loan.amount : 0,
+      progress: loan.amount > 0 ? actualPaidAmount / loan.amount : 0,
       interestRate: loan.interestRate,
       term: loan.term,
       startDate: loan.startDate,
@@ -185,7 +232,7 @@ exports.getGuarantorLoanById = async (req, res) => {
       description: loan.description,
       risk: loan.risk,
       schedule: loan.schedule,
-      payments: loan.payments,
+      // Don't include loan.payments as it's empty
       borrower: {
         id: loan.borrower.id,
         name: loan.borrower.name,
@@ -200,8 +247,8 @@ exports.getGuarantorLoanById = async (req, res) => {
       nextPayment: loan.schedule?.find(s => s.status === 'pending'),
       nextPaymentDate: loan.schedule?.find(s => s.status === 'pending')?.dueDate,
       nextPaymentAmount: loan.schedule?.find(s => s.status === 'pending')?.amount,
-      totalInstallments: loan.schedule?.length || 0,
-      paidInstallments: loan.schedule?.filter(s => s.status === 'paid').length || 0,
+      totalInstallments: totalInstallments,
+      paidInstallments: paidInstallments,
     };
 
     res.status(200).json({
@@ -232,7 +279,7 @@ exports.getLoanSchedule = async (req, res) => {
       _id: loanId,
       'guarantor.id': guarantorId,
       isDeleted: false
-    }).select('schedule loanId');
+    }).select('schedule loanId amount');
 
     if (!loan) {
       return res.status(404).json({
@@ -241,16 +288,36 @@ exports.getLoanSchedule = async (req, res) => {
       });
     }
 
-    // Process schedule with installment numbers
-    const schedule = loan.schedule.map((inst, index) => ({
-      installmentNo: index + 1,
-      dueDate: inst.dueDate,
-      amount: inst.amount,
-      principal: inst.principal,
-      interest: inst.interest,
-      status: inst.status,
-      paidAt: inst.paidAt,
-    }));
+    // Get payments to verify which installments are actually paid
+    const payments = await LoanPayment.find({ 
+      loanId: loan._id,
+      status: 'success'
+    });
+
+    // Calculate total paid amount from payments
+    const totalPaidAmount = payments.reduce((sum, p) => sum + p.amount, 0);
+    
+    // Calculate how many installments should be marked as paid
+    const installmentAmount = loan.amount / (loan.schedule?.length || 1);
+    const paidInstallmentsCount = installmentAmount > 0 
+      ? Math.round(totalPaidAmount / installmentAmount)
+      : 0;
+
+    // Process schedule with installment numbers and proper status
+    const schedule = loan.schedule.map((inst, index) => {
+      // Determine if this installment should be paid based on paid count
+      const shouldBePaid = index < paidInstallmentsCount;
+      
+      return {
+        installmentNo: index + 1,
+        dueDate: inst.dueDate,
+        amount: inst.amount,
+        principal: inst.principal,
+        interest: inst.interest,
+        status: shouldBePaid ? 'paid' : (inst.status || 'pending'),
+        paidAt: shouldBePaid ? (inst.paidAt || new Date()) : null,
+      };
+    });
 
     res.status(200).json({
       success: true,
@@ -270,7 +337,7 @@ exports.getLoanSchedule = async (req, res) => {
 };
 
 /**
- * @desc    Get payment history for a loan
+ * @desc    Get payment history for a loan (from LoanPayment collection)
  * @route   GET /api/guarantor/loans/:id/payments
  * @access  Private (Guarantor only)
  */
@@ -279,34 +346,57 @@ exports.getLoanPayments = async (req, res) => {
     const guarantorId = req.user.id;
     const loanId = req.params.id;
 
+    // First verify the user is guarantor for this loan
     const loan = await Loan.findOne({
       _id: loanId,
       'guarantor.id': guarantorId,
       isDeleted: false
-    }).select('payments loanId');
+    }).select('loanId borrower');
 
     if (!loan) {
       return res.status(404).json({
         success: false,
-        message: "Loan not found"
+        message: "Loan not found or you are not the guarantor"
       });
     }
 
-    // Sort payments by date (newest first)
-    const payments = loan.payments.sort((a, b) => 
-      new Date(b.date) - new Date(a.date)
-    );
+    // Get all payments from LoanPayment collection for this loan
+    const payments = await LoanPayment.find({ 
+      loanId: loanId // This matches the MongoDB ObjectId
+    })
+    .sort({ createdAt: -1 }) // Newest first
+    .lean();
+
+    console.log(`💰 Found ${payments.length} payments for loan ${loan.loanId}`);
+
+    // Format payments for frontend with all details
+    const formattedPayments = payments.map(payment => ({
+      _id: payment._id,
+      amount: payment.amount,
+      date: payment.createdAt,
+      method: payment.paymentMethod,
+      status: payment.status,
+      transactionId: payment.transactionId,
+      invoiceId: payment.invoiceId,
+      phoneNumber: payment.phoneNumber,
+      referenceId: payment.referenceId,
+      loanId_display: payment.loanId_display,
+      metadata: payment.metadata || {},
+      installmentNo: payment.metadata?.installmentNumber || 
+                     payment.metadata?.installmentNo || 
+                     null
+    }));
 
     res.status(200).json({
       success: true,
       data: {
         loanId: loan.loanId,
-        payments
+        payments: formattedPayments
       }
     });
 
   } catch (error) {
-    console.error("Error fetching loan payments:", error);
+    console.error("❌ Error fetching loan payments:", error);
     res.status(500).json({
       success: false,
       message: "Failed to fetch loan payments"
@@ -373,7 +463,7 @@ exports.getGuarantorNotifications = async (req, res) => {
         });
       }
 
-      // Successful payments
+      // Successful payments (from LoanPayment collection would be better here)
       if (loan.payments && loan.payments.length > 0) {
         loan.payments.slice(-3).forEach(payment => {
           notifications.push({
