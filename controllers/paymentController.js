@@ -791,3 +791,387 @@ exports.debugLoanOwnership = async (req, res) => {
     });
   }
 };
+
+// In paymentController.js - Add these functions
+
+/**
+ * @desc    Get ALL payments (for admin)
+ * @route   GET /api/payments/admin/all
+ * @access  Private (Admin only)
+ */
+exports.getAllPayments = async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 20, 
+      status, 
+      fromDate, 
+      toDate,
+      search,
+      loanId,
+      userId
+    } = req.query;
+
+    const query = {};
+    
+    // Apply filters
+    if (status) query.status = status;
+    if (loanId) query.loanId = loanId;
+    if (userId) query.userId = userId;
+    
+    if (fromDate || toDate) {
+      query.createdAt = {};
+      if (fromDate) query.createdAt.$gte = new Date(fromDate);
+      if (toDate) query.createdAt.$lte = new Date(toDate);
+    }
+
+    // Search by invoiceId, transactionId, phoneNumber
+    if (search) {
+      query.$or = [
+        { invoiceId: { $regex: search, $options: 'i' } },
+        { transactionId: { $regex: search, $options: 'i' } },
+        { phoneNumber: { $regex: search, $options: 'i' } },
+        { loanId_display: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const payments = await LoanPayment.find(query)
+      .populate('userId', 'name email phone')
+      .populate('loanId', 'loanId amount status schedule')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+
+    const total = await LoanPayment.countDocuments(query);
+
+    // Get summary stats for filters
+    const stats = await LoanPayment.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: '$amount' },
+          successfulAmount: {
+            $sum: { $cond: [{ $eq: ['$status', 'success'] }, '$amount', 0] }
+          },
+          successCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+          },
+          failedCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
+          },
+          pendingCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] }
+          }
+        }
+      }
+    ]);
+
+    return res.json({
+      success: true,
+      data: payments,
+      stats: stats[0] || {
+        totalAmount: 0,
+        successfulAmount: 0,
+        successCount: 0,
+        failedCount: 0,
+        pendingCount: 0
+      },
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+
+  } catch (err) {
+    console.error('Error fetching all payments:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payments'
+    });
+  }
+};
+
+/**
+ * @desc    Get overdue summary for admin dashboard
+ * @route   GET /api/payments/admin/overdue-summary
+ * @access  Private (Admin only)
+ */
+exports.getOverdueSummary = async (req, res) => {
+  try {
+    const now = new Date();
+    
+    // Find all active/overdue loans with pending installments past due
+    const loans = await Loan.find({
+      status: { $in: ['active', 'overdue'] },
+      isDeleted: false
+    })
+    .select('loanId borrower amount paidAmount schedule status')
+    .populate('borrower.id', 'name email phone')
+    .lean();
+
+    const overdueSummary = {
+      totalOverdue: 0,
+      totalOverdueAmount: 0,
+      byAge: {
+        '1-30': { count: 0, amount: 0 },
+        '31-60': { count: 0, amount: 0 },
+        '61+': { count: 0, amount: 0 }
+      },
+      atRisk: {
+        high: { count: 0, amount: 0 },
+        medium: { count: 0, amount: 0 },
+        low: { count: 0, amount: 0 }
+      },
+      loans: []
+    };
+
+    loans.forEach(loan => {
+      const pendingInstallments = (loan.schedule || []).filter(inst => 
+        inst.status === 'pending' && new Date(inst.dueDate) < now
+      );
+
+      if (pendingInstallments.length > 0) {
+        const totalOverdueForLoan = pendingInstallments.reduce((sum, inst) => sum + inst.amount, 0);
+        const oldestDueDate = new Date(Math.min(...pendingInstallments.map(i => new Date(i.dueDate))));
+        const daysOverdue = Math.floor((now - oldestDueDate) / (1000 * 60 * 60 * 24));
+
+        // Categorize by age
+        if (daysOverdue <= 30) {
+          overdueSummary.byAge['1-30'].count++;
+          overdueSummary.byAge['1-30'].amount += totalOverdueForLoan;
+        } else if (daysOverdue <= 60) {
+          overdueSummary.byAge['31-60'].count++;
+          overdueSummary.byAge['31-60'].amount += totalOverdueForLoan;
+        } else {
+          overdueSummary.byAge['61+'].count++;
+          overdueSummary.byAge['61+'].amount += totalOverdueForLoan;
+        }
+
+        // Categorize by risk (you can use loan.risk.level if available)
+        const riskLevel = loan.risk?.level || 'medium';
+        if (riskLevel === 'high' || riskLevel === 'critical') {
+          overdueSummary.atRisk.high.count++;
+          overdueSummary.atRisk.high.amount += totalOverdueForLoan;
+        } else if (riskLevel === 'medium') {
+          overdueSummary.atRisk.medium.count++;
+          overdueSummary.atRisk.medium.amount += totalOverdueForLoan;
+        } else {
+          overdueSummary.atRisk.low.count++;
+          overdueSummary.atRisk.low.amount += totalOverdueForLoan;
+        }
+
+        overdueSummary.totalOverdue++;
+        overdueSummary.totalOverdueAmount += totalOverdueForLoan;
+
+        overdueSummary.loans.push({
+          loanId: loan.loanId,
+          borrower: loan.borrower,
+          amount: loan.amount,
+          paidAmount: loan.paidAmount,
+          overdueAmount: totalOverdueForLoan,
+          daysOverdue,
+          pendingInstallments: pendingInstallments.length,
+          status: loan.status,
+          risk: loan.risk?.level
+        });
+      }
+    });
+
+    // Sort by most overdue
+    overdueSummary.loans.sort((a, b) => b.daysOverdue - a.daysOverdue);
+
+    res.json({
+      success: true,
+      data: overdueSummary
+    });
+
+  } catch (err) {
+    console.error('Error fetching overdue summary:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch overdue summary'
+    });
+  }
+};
+
+/**
+ * @desc    Get upcoming payments (next 7/30 days)
+ * @route   GET /api/payments/admin/upcoming
+ * @access  Private (Admin only)
+ */
+exports.getUpcomingPayments = async (req, res) => {
+  try {
+    const { days = 7 } = req.query;
+    const now = new Date();
+    const futureDate = new Date();
+    futureDate.setDate(futureDate.getDate() + parseInt(days));
+
+    const loans = await Loan.find({
+      status: { $in: ['active', 'overdue'] },
+      isDeleted: false
+    })
+    .select('loanId borrower amount schedule status')
+    .populate('borrower.id', 'name email phone')
+    .lean();
+
+    const upcoming = [];
+
+    loans.forEach(loan => {
+      const pendingInstallments = (loan.schedule || [])
+        .filter(inst => 
+          inst.status === 'pending' && 
+          new Date(inst.dueDate) >= now &&
+          new Date(inst.dueDate) <= futureDate
+        )
+        .map(inst => ({
+          installmentNo: inst.installmentNo,
+          dueDate: inst.dueDate,
+          amount: inst.amount,
+          daysLeft: Math.floor((new Date(inst.dueDate) - now) / (1000 * 60 * 60 * 24))
+        }));
+
+      if (pendingInstallments.length > 0) {
+        upcoming.push({
+          loanId: loan.loanId,
+          borrower: loan.borrower,
+          totalAmount: loan.amount,
+          nextInstallment: pendingInstallments[0], // oldest first
+          allUpcoming: pendingInstallments,
+          count: pendingInstallments.length
+        });
+      }
+    });
+
+    // Sort by due date (closest first)
+    upcoming.sort((a, b) => 
+      new Date(a.nextInstallment.dueDate) - new Date(b.nextInstallment.dueDate)
+    );
+
+    res.json({
+      success: true,
+      data: upcoming,
+      total: upcoming.length,
+      totalAmount: upcoming.reduce((sum, item) => sum + item.nextInstallment.amount, 0)
+    });
+
+  } catch (err) {
+    console.error('Error fetching upcoming payments:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch upcoming payments'
+    });
+  }
+};
+
+/**
+ * @desc    Get repayment statistics for dashboard
+ * @route   GET /api/payments/admin/dashboard-stats
+ * @access  Private (Admin only)
+ */
+exports.getRepaymentDashboardStats = async (req, res) => {
+  try {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay());
+
+    // Get payment stats
+    const [totalStats, monthStats, weekStats, overdueStats] = await Promise.all([
+      // Overall stats
+      LoanPayment.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalCollected: { $sum: '$amount' },
+            totalCount: { $sum: 1 },
+            successCount: {
+              $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+            },
+            successAmount: {
+              $sum: { $cond: [{ $eq: ['$status', 'success'] }, '$amount', 0] }
+            }
+          }
+        }
+      ]),
+
+      // This month
+      LoanPayment.aggregate([
+        { $match: { createdAt: { $gte: startOfMonth } } },
+        {
+          $group: {
+            _id: null,
+            amount: { $sum: '$amount' },
+            count: { $sum: 1 }
+          }
+        }
+      ]),
+
+      // This week
+      LoanPayment.aggregate([
+        { $match: { createdAt: { $gte: startOfWeek } } },
+        {
+          $group: {
+            _id: null,
+            amount: { $sum: '$amount' },
+            count: { $sum: 1 }
+          }
+        }
+      ]),
+
+      // Overdue loans count and amount
+      Loan.aggregate([
+        { $match: { status: 'overdue', isDeleted: false } },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            amount: { $sum: '$amount' },
+            paidAmount: { $sum: '$paidAmount' }
+          }
+        }
+      ])
+    ]);
+
+    // Calculate collection rate
+    const totalCollected = totalStats[0]?.totalCollected || 0;
+    const totalSuccessAmount = totalStats[0]?.successAmount || 0;
+    const collectionRate = totalCollected > 0 
+      ? (totalSuccessAmount / totalCollected) * 100 
+      : 0;
+
+    res.json({
+      success: true,
+      data: {
+        totalCollected: totalStats[0]?.totalCollected || 0,
+        totalPayments: totalStats[0]?.totalCount || 0,
+        successfulPayments: totalStats[0]?.successCount || 0,
+        collectionRate,
+        thisMonth: {
+          amount: monthStats[0]?.amount || 0,
+          count: monthStats[0]?.count || 0
+        },
+        thisWeek: {
+          amount: weekStats[0]?.amount || 0,
+          count: weekStats[0]?.count || 0
+        },
+        overdue: {
+          count: overdueStats[0]?.count || 0,
+          amount: (overdueStats[0]?.amount || 0) - (overdueStats[0]?.paidAmount || 0)
+        }
+      }
+    });
+
+  } catch (err) {
+    console.error('Error fetching dashboard stats:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch dashboard statistics'
+    });
+  }
+};

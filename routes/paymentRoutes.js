@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorize } = require('../middleware/authMiddleware'); // <-- ADD THIS LINE
 const paymentController = require('../controllers/paymentController');
 
 // All payment routes require authentication
@@ -51,6 +51,47 @@ router.get('/loan/:loanId/summary', paymentController.getLoanPaymentSummary);
  * @access  Private
  */
 router.get('/:paymentId', paymentController.getPaymentDetails);
+
+// ========== ADMIN PAYMENT ROUTES ==========
+/**
+ * @route   GET /api/payments/admin/all
+ * @desc    Get all payments (admin view)
+ * @access  Private (Admin only)
+ */
+router.get('/admin/all', 
+  authorize('super_admin', 'admin'), 
+  paymentController.getAllPayments
+);
+
+/**
+ * @route   GET /api/payments/admin/overdue-summary
+ * @desc    Get overdue summary for admin dashboard
+ * @access  Private (Admin only)
+ */
+router.get('/admin/overdue-summary', 
+  authorize('super_admin', 'admin'), 
+  paymentController.getOverdueSummary
+);
+
+/**
+ * @route   GET /api/payments/admin/upcoming
+ * @desc    Get upcoming payments
+ * @access  Private (Admin only)
+ */
+router.get('/admin/upcoming', 
+  authorize('super_admin', 'admin'), 
+  paymentController.getUpcomingPayments
+);
+
+/**
+ * @route   GET /api/payments/admin/dashboard-stats
+ * @desc    Get repayment dashboard statistics
+ * @access  Private (Admin only)
+ */
+router.get('/admin/dashboard-stats', 
+  authorize('super_admin', 'admin'), 
+  paymentController.getRepaymentDashboardStats
+);
 
 // ========== DEBUG ENDPOINTS (Development only) ==========
 /**

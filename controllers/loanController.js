@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Loan = require("../models/Loan");
 const User = require("../models/User");
+const LoanPayment = require("../models/LoanPayment"); // <-- ADD THIS LINE
 const bcrypt = require("bcryptjs");
 const { sendWelcomeEmail } = require('../services/emailService');
 
@@ -1545,3 +1546,146 @@ function generatePaymentSchedule(amount, interestRate, term, startDate, frequenc
 
   return schedule;
 }
+
+
+// @desc    Get all loans with accurate payment progress
+// @route   GET /api/loans/with-progress
+// @access  Private (Admin)
+exports.getLoansWithProgress = async (req, res) => {
+  try {
+    const {
+      status,
+      risk,
+      page = 1,
+      limit = 10,
+      search
+    } = req.query;
+
+    const query = { isDeleted: false };
+    if (status && status !== 'all') query.status = status;
+    if (risk && risk !== 'all') query['risk.level'] = risk;
+    
+    if (search) {
+      query.$or = [
+        { loanId: { $regex: search, $options: 'i' } },
+        { 'borrower.name': { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const loans = await Loan.find(query)
+      .populate('borrower.id', 'name email phone')
+      .sort('-createdAt')
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Loan.countDocuments(query);
+
+    // Get all successful payments for these loans
+    const loanIds = loans.map(loan => loan._id);
+    const payments = await LoanPayment.find({
+      loanId: { $in: loanIds },
+      status: 'success'
+    });
+
+    // Create a map of loanId -> total paid amount
+    const paidAmountMap = {};
+    payments.forEach(payment => {
+      const loanIdStr = payment.loanId.toString();
+      if (!paidAmountMap[loanIdStr]) {
+        paidAmountMap[loanIdStr] = 0;
+      }
+      paidAmountMap[loanIdStr] += payment.amount;
+    });
+
+    // Add accurate progress data to each loan
+    const loansWithProgress = loans.map(loan => {
+      const loanObj = loan.toObject();
+      const loanIdStr = loan._id.toString();
+      
+      // Get total paid amount from payments map
+      const totalPaidAmount = paidAmountMap[loanIdStr] || 0;
+      
+      // Get schedule if it exists
+      const schedule = loan.schedule || [];
+      const totalInstallments = schedule.length || loan.term || 1;
+      
+      // Calculate installment amount
+      const installmentAmount = loan.amount / totalInstallments;
+      
+// Calculate how many installments are paid based on total paid amount
+let paidInstallments = 0;
+if (installmentAmount > 0 && totalPaidAmount > 0) {
+  // Add a small epsilon to handle floating point precision
+  const epsilon = 0.01;
+  paidInstallments = Math.floor((totalPaidAmount + epsilon) / installmentAmount);
+  
+  // Cap at total installments
+  if (paidInstallments > totalInstallments) {
+    paidInstallments = totalInstallments;
+  }
+
+}
+      
+      // Calculate progress based on installments
+      const progress = totalInstallments > 0 
+        ? (paidInstallments / totalInstallments) * 100 
+        : 0;
+
+      // Calculate remaining amount
+      const remainingAmount = loan.amount - totalPaidAmount;
+
+      console.log(`Loan ${loan.loanId}:`, {
+        totalPaidAmount,
+        installmentAmount,
+        paidInstallments,
+        totalInstallments,
+        progress
+      });
+
+      return {
+        ...loanObj,
+        paidAmount: totalPaidAmount,
+        remainingAmount: remainingAmount,
+        progress: Number(progress.toFixed(2)),
+        paidInstallments,
+        totalInstallments,
+        installmentAmount: Number(installmentAmount.toFixed(2))
+      };
+    });
+
+    // Calculate summary stats
+    const summary = {
+      totalAmount: loansWithProgress.reduce((sum, l) => sum + l.amount, 0),
+      totalPaid: loansWithProgress.reduce((sum, l) => sum + l.paidAmount, 0),
+      totalRemaining: loansWithProgress.reduce((sum, l) => sum + l.remainingAmount, 0),
+      activeLoans: loansWithProgress.filter(l => l.status === 'active').length,
+      overdueLoans: loansWithProgress.filter(l => l.status === 'overdue').length,
+      completedLoans: loansWithProgress.filter(l => l.status === 'completed').length,
+      pendingLoans: loansWithProgress.filter(l => l.status === 'pending').length,
+      lowRisk: loansWithProgress.filter(l => l.risk?.level === 'low').length,
+      mediumRisk: loansWithProgress.filter(l => l.risk?.level === 'medium').length,
+      highRisk: loansWithProgress.filter(l => l.risk?.level === 'high').length,
+      criticalRisk: loansWithProgress.filter(l => l.risk?.level === 'critical').length
+    };
+
+    res.status(200).json({
+      success: true,
+      data: loansWithProgress,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      },
+      summary
+    });
+  } catch (error) {
+    console.error("Error fetching loans with progress:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch loans"
+    });
+  }
+};

@@ -15,7 +15,8 @@ const {
   deleteLoan,
   getLoanStats,
   verifyCollateral,
-  checkNationalId // Add this
+  checkNationalId,
+  getLoansWithProgress  // Make sure this is imported
 } = require("../controllers/loanController");
 
 // All routes are protected
@@ -27,6 +28,12 @@ router.post("/check-national-id", checkNationalId);
 // Stats route - must come before /:id routes
 router.get("/stats/overview", authorize('super_admin', 'admin', 'borrower', 'guarantor'), getLoanStats);
 
+// Get loans with accurate progress data - PUT THIS BEFORE /:id ROUTES
+router.get('/with-progress', 
+  authorize('super_admin', 'admin'), 
+  getLoansWithProgress
+);
+
 // Main CRUD routes
 router.route("/")
   .get(authorize('super_admin', 'admin', 'borrower', 'guarantor'), getLoans)
@@ -36,7 +43,7 @@ router.route("/")
     createLoan
   );
 
-// Get single loan by ID
+// Get single loan by ID - THIS COMES AFTER /with-progress
 router.route("/:id")
   .get(authorize('super_admin', 'admin', 'borrower', 'guarantor'), getLoanById)
   .put(

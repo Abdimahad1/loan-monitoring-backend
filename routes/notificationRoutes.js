@@ -93,6 +93,45 @@ router.post('/register-token', async (req, res) => {
   }
 });
 
+// TEMPORARY TEST ENDPOINT - Add this before module.exports
+// @route   POST /api/notifications/test-create
+// @desc    Create a test notification (FOR TESTING ONLY)
+// @access  Private
+router.post('/test-create', async (req, res) => {
+  try {
+    const { userId, type, title, message } = req.body;
+    
+    // Use the createNotification function from your controller
+    const { createNotification } = require('../controllers/notificationController');
+    
+    const notification = await createNotification({
+      userId: userId || req.user.id,
+      userRole: 'borrower',
+      type: type || 'system',
+      title: title || 'Test Notification',
+      message: message || 'This is a test notification from Postman',
+      priority: 'high',
+      action: {
+        label: 'View',
+        route: '/notifications'
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Test notification created',
+      data: notification
+    });
+  } catch (error) {
+    console.error('Error creating test notification:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+
 /**
  * @route   DELETE /api/notifications/unregister-token
  * @desc    Unregister device token
